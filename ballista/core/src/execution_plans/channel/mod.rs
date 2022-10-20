@@ -15,16 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! This module contains execution plans that are needed to distribute DataFusion's execution plans into
-//! several Ballista executors.
+//! This module contains input/output channels for shffule.
 
-mod distributed_query;
-mod shuffle_reader;
-mod shuffle_writer;
-mod unresolved_shuffle;
-mod channel;
+mod file;
 
-pub use distributed_query::DistributedQueryExec;
-pub use shuffle_reader::ShuffleReaderExec;
-pub use shuffle_writer::ShuffleWriterExec;
-pub use unresolved_shuffle::UnresolvedShuffleExec;
+use async_trait::async_trait;
+use datafusion::arrow::record_batch::RecordBatch;
+use crate::{error::Result, serde::protobuf::ShuffleWritePartition};
+
+
+/// An output channel receives one partiton of shuffle write data.
+#[async_trait]
+pub trait OutputChannel {
+    async fn append(&mut self, record_batch: &RecordBatch) -> Result<()>;
+    async fn finish(mut self) -> Result<ShuffleWritePartition>;
+}
