@@ -19,14 +19,42 @@
 
 mod file;
 
-use async_trait::async_trait;
-use datafusion::arrow::record_batch::RecordBatch;
-use crate::{error::Result, serde::protobuf::ShuffleWritePartition};
+use std::path::Path;
 
+use crate::{error::Result, serde::protobuf::ShuffleWritePartition};
+use async_trait::async_trait;
+use datafusion::arrow::{datatypes::Schema, record_batch::RecordBatch};
+
+use self::file::FileOutputChannel;
+
+use super::shuffle_writer::ShuffleWriteMetrics;
 
 /// An output channel receives one partiton of shuffle write data.
 #[async_trait]
 pub trait OutputChannel {
     async fn append(&mut self, record_batch: &RecordBatch) -> Result<()>;
     async fn finish(mut self) -> Result<ShuffleWritePartition>;
+}
+
+pub(in crate::execution_plans) fn new_file_channel<P: AsRef<Path>>(
+    input_partition: u64,
+    output_partition_id: u64,
+    base_path: P,
+    schema: &Schema,
+    metrics: ShuffleWriteMetrics,
+) -> Result<impl OutputChannel> {
+    FileOutputChannel::try_new(
+        input_partition,
+        output_partition_id,
+        base_path,
+        schema,
+        metrics,
+    )
+}
+
+pub(in crate::execution_plans) async fn write_stream_to_channel(
+    stream: &mut Pin<Box<dyn RecordBatchStream + Send>>,
+    path: &str,
+    disk_write_metric: &metrics::Time,
+) -> Result<PartitionStats> {
 }

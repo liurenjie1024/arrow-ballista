@@ -1,17 +1,19 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use datafusion::{arrow::{ipc::{writer::FileWriter}, record_batch::RecordBatch, datatypes::Schema}, physical_plan::metrics};
-use log::error;
+use datafusion::arrow::{datatypes::Schema, record_batch::RecordBatch};
+use log::debug;
 
-
-use crate::{error::BallistaError, execution_plans::shuffle_writer::ShuffleWriteMetrics, serde::{scheduler::PartitionStats, protobuf::ShuffleWritePartition}};
 use crate::error::Result;
+use crate::{
+    execution_plans::shuffle_writer::ShuffleWriteMetrics,
+    serde::protobuf::ShuffleWritePartition,
+};
 
 use super::OutputChannel;
 use datafusion::physical_plan::common::IPCWriter;
 
-struct FileOutputChannel {
+pub(super) struct FileOutputChannel {
     partition_id: u64,
     path: String,
     writer: IPCWriter,
@@ -44,18 +46,25 @@ impl OutputChannel for FileOutputChannel {
 }
 
 impl FileOutputChannel {
-    fn try_new<P: AsRef<Path>>(
+    pub(super) fn try_new<P: AsRef<Path>>(
+        input_partition: u64,
         partitiond_id: u64,
-        path: P,
+        base_path: P,
         schema: &Schema,
-        metrics: ShuffleWriteMetrics
-        ) -> Result<Self> {
+        metrics: ShuffleWriteMetrics,
+    ) -> Result<Self> {
+        let mut path = base_path.as_ref().to_path_buf();
+        path.push(&format!("{}", partitiond_id));
+        std::fs::create_dir_all(&path)?;
 
-            Ok(Self {
-                partition_id: partitiond_id,
-                path: path.as_ref().to_string_lossy().to_string(),
-                writer: IPCWriter::new(path.as_ref(), schema)?,
-                metrics
-            })
+        path.push(format!("data-{}.arrow", input_partition));
+        debug!("Writing results to {:?}", path);
+
+        Ok(Self {
+            partition_id: partitiond_id,
+            path: path.to_string_lossy().to_string(),
+            writer: IPCWriter::new(path.as_ref(), schema)?,
+            metrics,
+        })
     }
 }

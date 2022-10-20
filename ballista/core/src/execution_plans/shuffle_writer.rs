@@ -29,6 +29,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::execution_plans::channel::new_file_channel;
 use crate::utils;
 
 use crate::serde::protobuf::ShuffleWritePartition;
@@ -158,12 +159,14 @@ impl ShuffleWriterExec {
 
             match output_partitioning {
                 None => {
-                    let timer = write_metrics.write_time.timer();
-                    path.push(&format!("{}", input_partition));
-                    std::fs::create_dir_all(&path)?;
-                    path.push("data.arrow");
-                    let path = path.to_str().unwrap();
-                    debug!("Writing results to {}", path);
+                    let channel = new_file_channel(
+                        input_partition as u64,
+                        0,
+                        path,
+                        stream.schema().as_ref(),
+                        write_metrics,
+                    )
+                    .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
 
                     // stream results to disk
                     let stats = utils::write_stream_to_disk(
