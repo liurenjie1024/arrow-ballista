@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use datafusion::{arrow::{ipc::{writer::FileWriter, Schema}, record_batch::RecordBatch}, physical_plan::metrics};
+use datafusion::{arrow::{ipc::{writer::FileWriter}, record_batch::RecordBatch, datatypes::Schema}, physical_plan::metrics};
 use log::error;
 
 
@@ -9,11 +9,12 @@ use crate::{error::BallistaError, execution_plans::shuffle_writer::ShuffleWriteM
 use crate::error::Result;
 
 use super::OutputChannel;
+use datafusion::physical_plan::common::IPCWriter;
 
 struct FileOutputChannel {
     partition_id: u64,
     path: String,
-    writer: IpcWriter,
+    writer: IPCWriter,
     metrics: ShuffleWriteMetrics,
 }
 
@@ -51,9 +52,9 @@ impl FileOutputChannel {
         ) -> Result<Self> {
 
             Ok(Self {
-                partition_id,
+                partition_id: partitiond_id,
                 path: path.as_ref().to_string_lossy().to_string(),
-                writer: IpcWriter::new(path, schema),
+                writer: IPCWriter::new(path.as_ref(), schema)?,
                 metrics
             })
     }
