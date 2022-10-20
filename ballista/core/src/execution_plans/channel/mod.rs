@@ -19,11 +19,15 @@
 
 mod file;
 
-use std::path::Path;
+use core::num;
+use std::{path::Path, pin::Pin, vec};
 
 use crate::{error::Result, serde::protobuf::ShuffleWritePartition};
 use async_trait::async_trait;
-use datafusion::arrow::{datatypes::Schema, record_batch::RecordBatch};
+use datafusion::{
+    arrow::{datatypes::Schema, record_batch::RecordBatch},
+    physical_plan::{repartition::BatchPartitioner, RecordBatchStream},
+};
 
 use self::file::FileOutputChannel;
 
@@ -35,6 +39,8 @@ pub trait OutputChannel {
     async fn append(&mut self, record_batch: &RecordBatch) -> Result<()>;
     async fn finish(mut self) -> Result<ShuffleWritePartition>;
 }
+
+pub type OutputChannelFactor<C: OutputChannel> = FnMut(u64) -> Result<C>;
 
 pub(in crate::execution_plans) fn new_file_channel<P: AsRef<Path>>(
     input_partition: u64,
@@ -52,9 +58,56 @@ pub(in crate::execution_plans) fn new_file_channel<P: AsRef<Path>>(
     )
 }
 
-pub(in crate::execution_plans) async fn write_stream_to_channel(
+pub(in crate::execution_plans) async fn write_stream_to_channels<F, C>(
     stream: &mut Pin<Box<dyn RecordBatchStream + Send>>,
-    path: &str,
-    disk_write_metric: &metrics::Time,
-) -> Result<PartitionStats> {
+    channel_factory: F,
+    partition: Option<(BatchPartitioner, usize)>,
+    write_metrics: ShuffleWriteMetrics,
+) -> Result<Vec<ShuffleWritePartition>>
+where
+    C: OutputChannel,
+    F: FnMut(u64) -> Result<C>,
+{
+    let num_output_partitions = partition.map(|p| p.2).unwrap_or(1usize);
+    let mut output_channels: Vec<Option<C>> = vec![None; num_output_partitions];
+
+    while let Some(result) = stream.next().await {
+        let input_batch = result?;
+
+        write_metrics.input_rows.add(input_batch.num_rows());
+
+        match partition {
+            Some((partitioner, _)) => {
+                partitioner.partition(
+                    input_batch,
+                    |output_partition, output_batch| {
+
+                        let output_channel = output_channels[]
+                        match &mut writers[output_partition] {
+                            Some(w) => {
+                                w.write(&output_batch)?;
+                            }
+                            None => {
+                                let mut path = path.clone();
+                                path.push(&format!("{}", output_partition));
+                                std::fs::create_dir_all(&path)?;
+
+                                path.push(format!("data-{}.arrow", input_partition));
+                                debug!("Writing results to {:?}", path);
+
+                                let mut writer =
+                                    IPCWriter::new(&path, stream.schema().as_ref())?;
+
+                                writer.write(&output_batch)?;
+                                writers[output_partition] = Some(writer);
+                            }
+                        }
+                        write_metrics.output_rows.add(output_batch.num_rows());
+                        timer.done();
+                        Ok(())
+                    },
+                )?;
+            }
+        }
+    }
 }
