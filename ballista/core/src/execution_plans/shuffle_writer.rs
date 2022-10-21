@@ -22,6 +22,7 @@
 
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 
+use core::num;
 use std::any::Any;
 use std::future::Future;
 use std::iter::Iterator;
@@ -57,6 +58,8 @@ use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::repartition::BatchPartitioner;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use log::{debug, info};
+
+use super::channel::write_stream_to_channels;
 
 /// ShuffleWriterExec represents a section of a query plan that has consistent partitioning and
 /// can be executed as one unit with each partition being executed in parallel. The output of each
@@ -156,152 +159,40 @@ impl ShuffleWriterExec {
         async move {
             let now = Instant::now();
             let mut stream = plan.execute(input_partition, context)?;
-            let partitioner = output_partitioning.map(|p| 
-                match p {
-                    Partitioning::Hash(exprs, num_output_partitions) =>  {
-            BatchPartitioner::try_new(
-                Partitioning::Hash(exprs, num_output_partitions),
-                write_metrics.repart_time.clone())
-                    },
+            let partitioner = output_partitioning
+                .map(|p| match p {
+                    Partitioning::Hash(exprs, num_output_partitions) => Ok((
+                        BatchPartitioner::try_new(
+                            Partitioning::Hash(exprs, num_output_partitions),
+                            write_metrics.repart_time.clone(),
+                        )?,
+                        num_output_partitions,
+                    )),
                     _ => Err(DataFusionError::Execution(
                         "Invalid shuffle partitioning scheme".to_owned(),
-                    ))
-                },
-            ).transpose()?;
+                    )),
+                })
+                .transpose()?;
 
-            write_stream_to_channels(&mut stream, |output_partition| {
-                new_file_channel(input_partition as u64, output_partition, path,  stream.schema().as_ref(), write_metrics)}
-            )
-
-            match output_partitioning {
-                None => {
-                    let channel = new_file_channel(
+            let schema = stream.schema();
+            let write_metrics_cloned = write_metrics.clone();
+            write_stream_to_channels(
+                &mut stream,
+                move |output_partition| {
+                    let base_path = path.clone();
+                    new_file_channel(
                         input_partition as u64,
-                        0,
-                        path,
-                        stream.schema().as_ref(),
-                        write_metrics,
+                        output_partition,
+                        base_path,
+                        schema.as_ref(),
+                        write_metrics.clone(),
                     )
-                    .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
-
-                    // stream results to disk
-                    let stats = utils::write_stream_to_disk(
-                        ,
-                        path,
-                        &write_metrics.write_time,
-                    )
-                    .await
-                    .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
-
-                    write_metrics
-                        .input_rows
-                        .add(stats.num_rows.unwrap_or(0) as usize);
-                    write_metrics
-                        .output_rows
-                        .add(stats.num_rows.unwrap_or(0) as usize);
-                    timer.done();
-
-                    info!(
-                        "Executed partition {} in {} seconds. Statistics: {}",
-                        input_partition,
-                        now.elapsed().as_secs(),
-                        stats
-                    );
-
-                    Ok(vec![ShuffleWritePartition {
-                        partition_id: input_partition as u64,
-                        path: path.to_owned(),
-                        num_batches: stats.num_batches.unwrap_or(0),
-                        num_rows: stats.num_rows.unwrap_or(0),
-                        num_bytes: stats.num_bytes.unwrap_or(0),
-                    }])
-                }
-
-                Some() => {
-                    // we won't necessary produce output for every possible partition, so we
-                    // create writers on demand
-                    let mut writers: Vec<Option<IPCWriter>> = vec![];
-                    for _ in 0..num_output_partitions {
-                        writers.push(None);
-                    }
-
-                    let mut partitioner = ?;
-
-                    while let Some(result) = stream.next().await {
-                        let input_batch = result?;
-
-                        write_metrics.input_rows.add(input_batch.num_rows());
-
-                        partitioner.partition(
-                            input_batch,
-                            |output_partition, output_batch| {
-                                // write non-empty batch out
-
-                                // TODO optimize so we don't write or fetch empty partitions
-                                // if output_batch.num_rows() > 0 {
-                                let timer = write_metrics.write_time.timer();
-                                match &mut writers[output_partition] {
-                                    Some(w) => {
-                                        w.write(&output_batch)?;
-                                    }
-                                    None => {
-                                        let mut path = path.clone();
-                                        path.push(&format!("{}", output_partition));
-                                        std::fs::create_dir_all(&path)?;
-
-                                        path.push(format!(
-                                            "data-{}.arrow",
-                                            input_partition
-                                        ));
-                                        debug!("Writing results to {:?}", path);
-
-                                        let mut writer = IPCWriter::new(
-                                            &path,
-                                            stream.schema().as_ref(),
-                                        )?;
-
-                                        writer.write(&output_batch)?;
-                                        writers[output_partition] = Some(writer);
-                                    }
-                                }
-                                write_metrics.output_rows.add(output_batch.num_rows());
-                                timer.done();
-                                Ok(())
-                            },
-                        )?;
-                    }
-
-                    let mut part_locs = vec![];
-
-                    for (i, w) in writers.iter_mut().enumerate() {
-                        match w {
-                            Some(w) => {
-                                w.finish()?;
-                                debug!(
-                                    "Finished writing shuffle partition {} at {:?}. Batches: {}. Rows: {}. Bytes: {}.",
-                                    i,
-                                    w.path(),
-                                    w.num_batches,
-                                    w.num_rows,
-                                    w.num_bytes
-                                );
-
-                                part_locs.push(ShuffleWritePartition {
-                                    partition_id: i as u64,
-                                    path: w.path().to_string_lossy().to_string(),
-                                    num_batches: w.num_batches,
-                                    num_rows: w.num_rows,
-                                    num_bytes: w.num_bytes,
-                                });
-                            }
-                            None => {}
-                        }
-                    }
-                    Ok(part_locs)
-                }
-
-                _ => ,
-            }
+                },
+                partitioner,
+                write_metrics_cloned,
+            )
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))
         }
     }
 }

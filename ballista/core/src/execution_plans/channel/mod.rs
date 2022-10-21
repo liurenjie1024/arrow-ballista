@@ -26,6 +26,7 @@ use crate::{error::Result, serde::protobuf::ShuffleWritePartition};
 use async_trait::async_trait;
 use datafusion::{
     arrow::{datatypes::Schema, record_batch::RecordBatch},
+    error::DataFusionError,
     physical_plan::{repartition::BatchPartitioner, RecordBatchStream},
 };
 use futures::StreamExt;
@@ -40,8 +41,6 @@ pub trait OutputChannel {
     async fn append(&mut self, record_batch: &RecordBatch) -> Result<()>;
     async fn finish(mut self) -> Result<ShuffleWritePartition>;
 }
-
-pub type OutputChannelFactor<C: OutputChannel> = FnMut(u64) -> Result<C>;
 
 pub(in crate::execution_plans) fn new_file_channel<P: AsRef<Path>>(
     input_partition: u64,
@@ -61,15 +60,15 @@ pub(in crate::execution_plans) fn new_file_channel<P: AsRef<Path>>(
 
 pub(in crate::execution_plans) async fn write_stream_to_channels<F, C>(
     stream: &mut Pin<Box<dyn RecordBatchStream + Send>>,
-    channel_factory: F,
-    partition: Option<(BatchPartitioner, usize)>,
+    mut channel_factory: F,
+    mut partition: Option<(BatchPartitioner, usize)>,
     write_metrics: ShuffleWriteMetrics,
 ) -> Result<Vec<ShuffleWritePartition>>
 where
     C: OutputChannel,
     F: FnMut(u64) -> Result<C>,
 {
-    let num_output_partitions = partition.map(|p| p.1).unwrap_or(1usize);
+    let num_output_partitions = partition.as_ref().map(|p| p.1).unwrap_or(1usize);
     let mut output_channels: Vec<Option<C>> = Vec::with_capacity(num_output_partitions);
     (0..num_output_partitions).for_each(|_| output_channels.push(None));
     let mut output_batches: Vec<Option<RecordBatch>> = vec![None; num_output_partitions];
@@ -79,36 +78,32 @@ where
 
         write_metrics.input_rows.add(input_batch.num_rows());
 
-        match partition {
-            Some((partitioner, _)) => {
-                partitioner.partition(
-                    input_batch,
-                    |output_partition, output_batch| {
-                        // We need this because partitioner only accepts sync function, while output channel is async
-                        output_batches[output_partition] = Some(output_batch);
+        if let Some((ref mut partitioner, _)) = partition.as_mut() {
+            partitioner.partition(input_batch, |output_partition, output_batch| {
+                // We need this because partitioner only accepts sync function, while output channel is async
+                output_batches[output_partition] = Some(output_batch);
 
-                        if output_channels[output_partition].is_none() {
-                            output_channels[output_partition] =
-                                Some(channel_factory(output_partition as u64)?);
-                        }
-
-                        Ok(())
-                    },
-                )?;
-            }
-            None => {
-                output_batches[0] = Some(output_batch);
-
-                if output_channels[0].is_none() {
-                    output_channels[0] = Some(channel_factory(0)?);
+                if output_channels[output_partition].is_none() {
+                    output_channels[output_partition] =
+                        Some(channel_factory(output_partition as u64).map_err(|e| {
+                            DataFusionError::Execution(format!("{:?}", e))
+                        })?);
                 }
+
+                Ok(())
+            })?;
+        } else {
+            output_batches[0] = Some(input_batch);
+
+            if output_channels[0].is_none() {
+                output_channels[0] = Some(channel_factory(0)?);
             }
         }
 
         for (batch_opt, channel_opt) in
             output_batches.iter_mut().zip(output_channels.iter_mut())
         {
-            match (batch_opt, channel_opt) {
+            match (batch_opt.as_ref(), channel_opt) {
                 (Some(batch), Some(channel)) => {
                     channel.append(batch).await?;
                 }
@@ -122,7 +117,7 @@ where
     let mut write_partitions: Vec<ShuffleWritePartition> =
         Vec::with_capacity(num_output_partitions);
 
-    for channel in &mut output_channels {
+    for channel in output_channels {
         if let Some(c) = channel {
             write_partitions.push(c.finish().await?);
         }
