@@ -28,6 +28,7 @@ use datafusion::{
     arrow::{datatypes::Schema, record_batch::RecordBatch},
     physical_plan::{repartition::BatchPartitioner, RecordBatchStream},
 };
+use futures::StreamExt;
 
 use self::file::FileOutputChannel;
 
@@ -68,8 +69,10 @@ where
     C: OutputChannel,
     F: FnMut(u64) -> Result<C>,
 {
-    let num_output_partitions = partition.map(|p| p.2).unwrap_or(1usize);
-    let mut output_channels: Vec<Option<C>> = vec![None; num_output_partitions];
+    let num_output_partitions = partition.map(|p| p.1).unwrap_or(1usize);
+    let mut output_channels: Vec<Option<C>> = Vec::with_capacity(num_output_partitions);
+    (0..num_output_partitions).for_each(|_| output_channels.push(None));
+    let mut output_batches: Vec<Option<RecordBatch>> = vec![None; num_output_partitions];
 
     while let Some(result) = stream.next().await {
         let input_batch = result?;
@@ -81,33 +84,49 @@ where
                 partitioner.partition(
                     input_batch,
                     |output_partition, output_batch| {
+                        // We need this because partitioner only accepts sync function, while output channel is async
+                        output_batches[output_partition] = Some(output_batch);
 
-                        let output_channel = output_channels[]
-                        match &mut writers[output_partition] {
-                            Some(w) => {
-                                w.write(&output_batch)?;
-                            }
-                            None => {
-                                let mut path = path.clone();
-                                path.push(&format!("{}", output_partition));
-                                std::fs::create_dir_all(&path)?;
-
-                                path.push(format!("data-{}.arrow", input_partition));
-                                debug!("Writing results to {:?}", path);
-
-                                let mut writer =
-                                    IPCWriter::new(&path, stream.schema().as_ref())?;
-
-                                writer.write(&output_batch)?;
-                                writers[output_partition] = Some(writer);
-                            }
+                        if output_channels[output_partition].is_none() {
+                            output_channels[output_partition] =
+                                Some(channel_factory(output_partition as u64)?);
                         }
-                        write_metrics.output_rows.add(output_batch.num_rows());
-                        timer.done();
+
                         Ok(())
                     },
                 )?;
             }
+            None => {
+                output_batches[0] = Some(output_batch);
+
+                if output_channels[0].is_none() {
+                    output_channels[0] = Some(channel_factory(0)?);
+                }
+            }
+        }
+
+        for (batch_opt, channel_opt) in
+            output_batches.iter_mut().zip(output_channels.iter_mut())
+        {
+            match (batch_opt, channel_opt) {
+                (Some(batch), Some(channel)) => {
+                    channel.append(batch).await?;
+                }
+                (_, _) => {}
+            }
+            // Clean up appended batch
+            batch_opt.take();
         }
     }
+
+    let mut write_partitions: Vec<ShuffleWritePartition> =
+        Vec::with_capacity(num_output_partitions);
+
+    for channel in &mut output_channels {
+        if let Some(c) = channel {
+            write_partitions.push(c.finish().await?);
+        }
+    }
+
+    Ok(write_partitions)
 }

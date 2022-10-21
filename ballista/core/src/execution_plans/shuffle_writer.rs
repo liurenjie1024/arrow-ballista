@@ -156,6 +156,22 @@ impl ShuffleWriterExec {
         async move {
             let now = Instant::now();
             let mut stream = plan.execute(input_partition, context)?;
+            let partitioner = output_partitioning.map(|p| 
+                match p {
+                    Partitioning::Hash(exprs, num_output_partitions) =>  {
+            BatchPartitioner::try_new(
+                Partitioning::Hash(exprs, num_output_partitions),
+                write_metrics.repart_time.clone())
+                    },
+                    _ => Err(DataFusionError::Execution(
+                        "Invalid shuffle partitioning scheme".to_owned(),
+                    ))
+                },
+            ).transpose()?;
+
+            write_stream_to_channels(&mut stream, |output_partition| {
+                new_file_channel(input_partition as u64, output_partition, path,  stream.schema().as_ref(), write_metrics)}
+            )
 
             match output_partitioning {
                 None => {
@@ -170,7 +186,7 @@ impl ShuffleWriterExec {
 
                     // stream results to disk
                     let stats = utils::write_stream_to_disk(
-                        &mut stream,
+                        ,
                         path,
                         &write_metrics.write_time,
                     )
@@ -201,7 +217,7 @@ impl ShuffleWriterExec {
                     }])
                 }
 
-                Some(Partitioning::Hash(exprs, num_output_partitions)) => {
+                Some() => {
                     // we won't necessary produce output for every possible partition, so we
                     // create writers on demand
                     let mut writers: Vec<Option<IPCWriter>> = vec![];
@@ -209,10 +225,7 @@ impl ShuffleWriterExec {
                         writers.push(None);
                     }
 
-                    let mut partitioner = BatchPartitioner::try_new(
-                        Partitioning::Hash(exprs, num_output_partitions),
-                        write_metrics.repart_time.clone(),
-                    )?;
+                    let mut partitioner = ?;
 
                     while let Some(result) = stream.next().await {
                         let input_batch = result?;
@@ -287,9 +300,7 @@ impl ShuffleWriterExec {
                     Ok(part_locs)
                 }
 
-                _ => Err(DataFusionError::Execution(
-                    "Invalid shuffle partitioning scheme".to_owned(),
-                )),
+                _ => ,
             }
         }
     }
