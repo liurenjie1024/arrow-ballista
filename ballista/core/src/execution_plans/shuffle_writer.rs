@@ -22,7 +22,7 @@
 
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 
-use core::num;
+
 use std::any::Any;
 use std::future::Future;
 use std::iter::Iterator;
@@ -31,7 +31,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::execution_plans::channel::new_file_channel;
-use crate::utils;
+
 
 use crate::serde::protobuf::ShuffleWritePartition;
 use crate::serde::scheduler::PartitionStats;
@@ -42,7 +42,7 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result};
-use datafusion::physical_plan::common::IPCWriter;
+
 use datafusion::physical_plan::memory::MemoryStream;
 use datafusion::physical_plan::metrics::{
     self, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
@@ -57,7 +57,7 @@ use datafusion::arrow::error::ArrowError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::repartition::BatchPartitioner;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use log::{debug, info};
+use log::{debug};
 
 use super::channel::write_stream_to_channels;
 
@@ -157,7 +157,7 @@ impl ShuffleWriterExec {
         let plan = self.plan.clone();
 
         async move {
-            let now = Instant::now();
+            let _now = Instant::now();
             let mut stream = plan.execute(input_partition, context)?;
             let partitioner = output_partitioning
                 .map(|p| match p {

@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Path};
 
 use async_trait::async_trait;
 use datafusion::arrow::{datatypes::Schema, record_batch::RecordBatch};
