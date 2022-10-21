@@ -22,16 +22,13 @@
 
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 
-
 use std::any::Any;
 use std::future::Future;
-use std::iter::Iterator;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use crate::execution_plans::channel::new_file_channel;
-
 
 use crate::serde::protobuf::ShuffleWritePartition;
 use crate::serde::scheduler::PartitionStats;
@@ -51,13 +48,13 @@ use datafusion::physical_plan::metrics::{
 use datafusion::physical_plan::{
     DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream, Statistics,
 };
-use futures::{StreamExt, TryFutureExt, TryStreamExt};
+use futures::{TryFutureExt, TryStreamExt};
 
 use datafusion::arrow::error::ArrowError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::repartition::BatchPartitioner;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use log::{debug};
+use log::debug;
 
 use super::channel::write_stream_to_channels;
 
@@ -364,7 +361,7 @@ mod tests {
             Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
         )?;
         let mut stream = query_stage.execute(0, task_ctx)?;
-        let batches = utils::collect_stream(&mut stream)
+        let batches = crate::utils::collect_stream(&mut stream)
             .await
             .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
         assert_eq!(1, batches.len());
@@ -421,7 +418,7 @@ mod tests {
             Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
         )?;
         let mut stream = query_stage.execute(0, task_ctx)?;
-        let batches = utils::collect_stream(&mut stream)
+        let batches = crate::utils::collect_stream(&mut stream)
             .await
             .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
         assert_eq!(1, batches.len());

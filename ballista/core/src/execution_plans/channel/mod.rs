@@ -19,7 +19,6 @@
 
 mod file;
 
-
 use std::{path::Path, pin::Pin, vec};
 
 use crate::{error::Result, serde::protobuf::ShuffleWritePartition};
@@ -103,11 +102,8 @@ where
         for (batch_opt, channel_opt) in
             output_batches.iter_mut().zip(output_channels.iter_mut())
         {
-            match (batch_opt.as_ref(), channel_opt) {
-                (Some(batch), Some(channel)) => {
-                    channel.append(batch).await?;
-                }
-                (_, _) => {}
+            if let (Some(batch), Some(channel)) = (batch_opt.as_ref(), channel_opt) {
+                channel.append(batch).await?;
             }
             // Clean up appended batch
             batch_opt.take();
@@ -117,10 +113,8 @@ where
     let mut write_partitions: Vec<ShuffleWritePartition> =
         Vec::with_capacity(num_output_partitions);
 
-    for channel in output_channels {
-        if let Some(c) = channel {
-            write_partitions.push(c.finish().await?);
-        }
+    for channel in output_channels.into_iter().flatten() {
+        write_partitions.push(channel.finish().await?);
     }
 
     Ok(write_partitions)
