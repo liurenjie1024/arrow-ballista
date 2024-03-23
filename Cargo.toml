@@ -23,14 +23,17 @@ members = [
     "ballista/core",
     "ballista/executor",
     "ballista/scheduler",
+    "ballista/spark/client",
+    "ballista/spark/common",
+    "ballista/spark/server",
     "benchmarks",
     "examples"
 ]
-exclude = [ "python" ]
+exclude = ["python"]
 resolver = "2"
 
 [workspace.dependencies]
-arrow = { version = "50.0.0", features=["ipc_compression"] }
+arrow = { version = "50.0.0", features = ["ipc_compression"] }
 arrow-flight = { version = "50.0.0", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "50.0.0", default-features = false }
 configure_me = { version = "0.4.0" }
@@ -48,6 +51,8 @@ tonic-build = { version = "0.10", default-features = false, features = [
 tracing = "0.1.36"
 tracing-appender = "0.2.2"
 tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }
+async-trait = "0.1"
+tokio = "1"
 
 # cargo build --profile release-lto
 [profile.release-lto]
